@@ -365,17 +365,48 @@ export class MemoryStore {
       .reverse();
   }
 
+  /**
+   * Drop the entire graph. Returns the number of nodes that were removed.
+   * Safe to call on an empty graph.
+   */
+  async clearGraph(): Promise<number> {
+    await this.connect();
+    try {
+      const rows = await this.queryRows(
+        `MATCH (n) WITH count(n) AS n DETACH DELETE n RETURN n AS deleted`,
+        undefined,
+        false,
+      );
+      const deleted = Number(rows[0]?.["deleted"] ?? 0);
+      // Reset init state so the next operation re-creates indexes.
+      this.initialized = false;
+      return deleted;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/empty key|empty graph/i.test(msg)) return 0;
+      throw err;
+    }
+  }
+
   async stats(): Promise<{ entities: number; relations: number; turns: number }> {
-    const [eRows, rRows, tRows] = await Promise.all([
-      this.queryRows(`MATCH (e:Entity) RETURN count(e) AS c`, undefined, true),
-      this.queryRows(`MATCH ()-[r:REL]->() RETURN count(r) AS c`, undefined, true),
-      this.queryRows(`MATCH (t:Turn) RETURN count(t) AS c`, undefined, true),
-    ]);
-    return {
-      entities: Number(eRows[0]?.["c"] ?? 0),
-      relations: Number(rRows[0]?.["c"] ?? 0),
-      turns: Number(tRows[0]?.["c"] ?? 0),
+    // Wrap each in a soft-fail so an empty graph (no key in Redis yet) reports
+    // zeros instead of throwing "Invalid graph operation on empty key".
+    const count = async (cypher: string): Promise<number> => {
+      try {
+        const rows = await this.queryRows(cypher, undefined, true);
+        return Number(rows[0]?.["c"] ?? 0);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/empty key|empty graph/i.test(msg)) return 0;
+        throw err;
+      }
     };
+    const [entities, relations, turns] = await Promise.all([
+      count(`MATCH (e:Entity) RETURN count(e) AS c`),
+      count(`MATCH ()-[r:REL]->() RETURN count(r) AS c`),
+      count(`MATCH (t:Turn) RETURN count(t) AS c`),
+    ]);
+    return { entities, relations, turns };
   }
 }
 

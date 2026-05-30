@@ -1,15 +1,9 @@
 import { NextRequest } from "next/server";
 import { Assistant } from "@open-assistant/core";
-import { MemoryStore } from "@open-assistant/memory";
+import { memory } from "@/lib/services";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-let cachedMemory: MemoryStore | null = null;
-function memory(): MemoryStore {
-  cachedMemory ??= new MemoryStore();
-  return cachedMemory;
-}
 
 const encoder = new TextEncoder();
 function sseEvent(name: string, data: unknown): Uint8Array {

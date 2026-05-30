@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { spawn, spawnSync } from "node:child_process";
+import { currentConfig, type Config } from "./config.js";
 
 export type Role = "user" | "assistant" | "system";
 
@@ -354,16 +355,184 @@ export class ClaudeCliProvider implements LLMProvider {
   }
 }
 
-export function selectProvider(): LLMProvider {
-  const explicit = (process.env.OA_LLM_PROVIDER ?? "").toLowerCase();
-  if (explicit === "anthropic") return new AnthropicProvider();
-  if (explicit === "claude-cli") return new ClaudeCliProvider();
-  if (explicit === "ollama") return new OllamaProvider();
+export interface OpenAICompatibleOptions {
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
 
+/**
+ * Speaks the OpenAI `chat/completions` API. Works with the OpenAI cloud,
+ * vLLM, LM Studio, Together, Groq, and any other server that mirrors the
+ * schema. Streaming uses standard SSE `data:` frames.
+ */
+export class OpenAICompatibleProvider implements LLMProvider {
+  readonly name = "openai-compatible";
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+  private readonly model: string;
+  private readonly temperature: number | undefined;
+  private readonly maxTokens: number;
+
+  constructor(opts: OpenAICompatibleOptions = {}) {
+    this.baseUrl = (opts.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    this.apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY ?? "";
+    this.model = opts.model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+    this.temperature = opts.temperature;
+    this.maxTokens = opts.maxTokens ?? Number(process.env.OA_MAX_TOKENS ?? 4096);
+  }
+
+  private buildBody(messages: ChatMessage[], system: string | undefined, stream: boolean): string {
+    const msgs: { role: string; content: string }[] = [];
+    if (system) msgs.push({ role: "system", content: system });
+    for (const m of messages) {
+      if (m.role === "system") continue;
+      msgs.push({ role: m.role, content: m.content });
+    }
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages: msgs,
+      max_tokens: this.maxTokens,
+      stream,
+    };
+    if (typeof this.temperature === "number") body["temperature"] = this.temperature;
+    return JSON.stringify(body);
+  }
+
+  private headers(): Record<string, string> {
+    const h: Record<string, string> = { "content-type": "application/json" };
+    if (this.apiKey) h["authorization"] = `Bearer ${this.apiKey}`;
+    return h;
+  }
+
+  async complete(
+    messages: ChatMessage[],
+    opts: { system?: string; maxTokens?: number } = {},
+  ): Promise<LLMCompletion> {
+    const { system, dialogue } = splitSystem(messages, opts.system);
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: this.headers(),
+      body: this.buildBody(dialogue, system, false),
+    });
+    if (!res.ok) throw new Error(`OpenAI-compatible error ${res.status}: ${await res.text()}`);
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
+    return {
+      text: data.choices?.[0]?.message?.content ?? "",
+      model: this.model,
+      inputTokens: data.usage?.prompt_tokens,
+      outputTokens: data.usage?.completion_tokens,
+    };
+  }
+
+  async *stream(
+    messages: ChatMessage[],
+    opts: { system?: string; maxTokens?: number } = {},
+  ): AsyncIterable<StreamEvent> {
+    const { system, dialogue } = splitSystem(messages, opts.system);
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: this.headers(),
+      body: this.buildBody(dialogue, system, true),
+    });
+    if (!res.ok || !res.body) throw new Error(`OpenAI-compatible error ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let full = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE events delimited by double newlines.
+      const blocks = buf.split("\n\n");
+      buf = blocks.pop() ?? "";
+      for (const block of blocks) {
+        for (const line of block.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+            const chunk = parsed.choices?.[0]?.delta?.content;
+            if (chunk) {
+              full += chunk;
+              yield { type: "text", text: chunk };
+            }
+          } catch {
+            /* skip malformed frames */
+          }
+        }
+      }
+    }
+    yield { type: "done", text: full, model: this.model };
+  }
+}
+
+/**
+ * Pick the right provider for the current request. Order of precedence:
+ *  1. explicit override (OA_LLM_PROVIDER env var)
+ *  2. config file (~/.open-assistant/config.json)
+ *  3. heuristic: Anthropic if API key set, else claude-cli if installed, else Ollama
+ *
+ * Each call re-reads the config so changes to settings.json apply immediately
+ * without requiring a restart.
+ */
+export function selectProvider(): LLMProvider {
+  const cfg = (() => {
+    try {
+      return currentConfig();
+    } catch {
+      return null;
+    }
+  })();
+  const explicit = (process.env.OA_LLM_PROVIDER ?? "").toLowerCase();
+  const choice = (explicit || cfg?.llm.provider || "").toLowerCase();
+
+  if (choice === "anthropic") return providerFromConfig("anthropic", cfg);
+  if (choice === "claude-cli") return providerFromConfig("claude-cli", cfg);
+  if (choice === "ollama") return providerFromConfig("ollama", cfg);
+  if (choice === "openai-compatible") return providerFromConfig("openai-compatible", cfg);
+
+  // Heuristic fallback.
   const anthropic = new AnthropicProvider();
   if (anthropic.isConfigured) return anthropic;
   if (ClaudeCliProvider.isAvailable()) return new ClaudeCliProvider();
   return new OllamaProvider();
+}
+
+function providerFromConfig(name: string, cfg: Config | null): LLMProvider {
+  const llm = cfg?.llm;
+  switch (name) {
+    case "anthropic":
+      return new AnthropicProvider({
+        apiKey: llm?.apiKey || undefined,
+        model: llm?.model || undefined,
+        maxTokens: llm?.maxTokens,
+      });
+    case "claude-cli":
+      return new ClaudeCliProvider({ model: llm?.model || undefined });
+    case "ollama":
+      return new OllamaProvider({
+        baseUrl: llm?.baseUrl || undefined,
+        model: llm?.model || undefined,
+      });
+    case "openai-compatible":
+      return new OpenAICompatibleProvider({
+        baseUrl: llm?.baseUrl || undefined,
+        apiKey: llm?.apiKey || undefined,
+        model: llm?.model || undefined,
+        temperature: llm?.temperature,
+        maxTokens: llm?.maxTokens,
+      });
+    default:
+      return new ClaudeCliProvider();
+  }
 }
 
 function splitSystem(

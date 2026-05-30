@@ -1,7 +1,7 @@
 .shell {
   display: grid;
   grid-template-rows: auto 1fr auto;
-  height: 100vh;
+  height: 100%;
   max-width: 880px;
   margin: 0 auto;
   padding: 24px;
