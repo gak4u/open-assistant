@@ -1,6 +1,7 @@
 export * from "./schema.js";
 export * from "./client.js";
 export * from "./extractor.js";
+export * from "./identity.js";
 
 import { MemoryStore } from "./client.js";
 import { EntityExtractor, type ExtractorOptions } from "./extractor.js";

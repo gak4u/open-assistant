@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { Assistant } from "@open-assistant/core";
 import { MemoryStore } from "@open-assistant/memory";
 
@@ -11,22 +11,43 @@ function memory(): MemoryStore {
   return cachedMemory;
 }
 
+const encoder = new TextEncoder();
+function sseEvent(name: string, data: unknown): Uint8Array {
+  return encoder.encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
 export async function POST(req: NextRequest) {
   const { question, session_id } = (await req.json()) as { question?: string; session_id?: string };
   if (!question?.trim()) {
-    return NextResponse.json({ error: "missing question" }, { status: 400 });
-  }
-  const assistant = new Assistant({ memory: memory(), sessionId: session_id });
-  try {
-    const result = await assistant.ask(question);
-    return NextResponse.json({
-      reply: result.reply,
-      sessionId: result.sessionId,
-      memoryUsed: { entities: result.memoryUsed.entities.map((e) => ({ id: e.id, name: e.name })) },
-      model: result.model,
+    return new Response(JSON.stringify({ error: "missing question" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 500 });
   }
+
+  const assistant = new Assistant({ memory: memory(), sessionId: session_id });
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for await (const evt of assistant.askStream(question)) {
+          controller.enqueue(sseEvent(evt.type, evt));
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        controller.enqueue(sseEvent("error", { type: "error", error: msg }));
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      "connection": "keep-alive",
+      "x-accel-buffering": "no",
+    },
+  });
 }
