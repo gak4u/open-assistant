@@ -1,0 +1,65 @@
+:root {
+  --bg: #0b0d10;
+  --bg-elev: #14171c;
+  --bg-input: #1a1e24;
+  --border: #232830;
+  --fg: #e6e8eb;
+  --fg-dim: #9aa3ad;
+  --accent: #7c9cff;
+  --accent-soft: rgba(124, 156, 255, 0.12);
+  --user: #b5e1a0;
+  --assistant: #c8b6ff;
+  --danger: #ff7a7a;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Inter", Segoe UI, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  min-height: 100vh;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+button:hover:not(:disabled) { background: #1d222a; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary {
+  background: var(--accent);
+  color: #0b0d10;
+  border-color: var(--accent);
+}
+button.primary:hover:not(:disabled) { background: #95b1ff; }
+
+textarea, input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  width: 100%;
+  outline: none;
+}
+textarea:focus, input:focus { border-color: var(--accent); }
+textarea { resize: vertical; min-height: 56px; font-family: var(--sans); }
+
+pre, code { font-family: var(--mono); font-size: 13px; }

@@ -1,0 +1,19 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: open-assistant-falkordb
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+      - "3000:3000" # FalkorDB Browser UI
+    volumes:
+      - falkordb-data:/data
+    command: ["--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  falkordb-data:

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.open-assistant.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/usr/local/lib/open-assistant/apps/daemon/dist/index.js</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key><string>production</string>
+    <!-- set additional env vars here, or load via dotenv -->
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/usr/local/lib/open-assistant</string>
+
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/open-assistant.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/open-assistant.err.log</string>
+</dict>
+</plist>

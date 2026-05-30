@@ -1,0 +1,17 @@
+[Unit]
+Description=open-assistant daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/open-assistant
+EnvironmentFile=/etc/open-assistant.env
+ExecStart=/usr/bin/node /opt/open-assistant/apps/daemon/dist/index.js
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
