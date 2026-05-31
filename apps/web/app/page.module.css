@@ -34,6 +34,18 @@
 .dot.ok { background: #5fdc7e; }
 .dot.bad { background: var(--danger); }
 
+.projectsPill {
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--mono);
+  border: 1px solid rgba(124, 156, 255, 0.2);
+  transition: background 100ms ease;
+}
+.projectsPill:hover { background: rgba(124, 156, 255, 0.2); text-decoration: none; }
+
 .messages {
   overflow-y: auto;
   display: flex;

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import styles from "./settings.module.css";
+import { OnboardingModal } from "../OnboardingModal";
 
 type ProviderName = "anthropic" | "claude-cli" | "ollama" | "openai-compatible";
 
@@ -51,12 +52,15 @@ export default function SettingsPage() {
     user: "",
     assistant: "",
   });
+  const [onboardingTrigger, setOnboardingTrigger] = useState<number | null>(null);
+  const [onboardingStatus, setOnboardingStatus] = useState<{ completed: boolean; lastRunAt: number; lastSummary: { projectsCreated: number; entitiesCreated: number; sessionsFound: number; reposFound: number; relationsCreated: number } } | null>(null);
 
   const load = useCallback(async () => {
-    const [s, h, id] = await Promise.all([
+    const [s, h, id, ob] = await Promise.all([
       fetch("/api/settings").then((r) => r.json()).catch(() => null),
       fetch("/api/health").then((r) => (r.ok ? r.json() : { daemon: false })).catch(() => ({ daemon: false })),
       fetch("/api/identities").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/onboarding/status").then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ]);
     if (s) {
       setData(s);
@@ -64,6 +68,7 @@ export default function SettingsPage() {
     }
     setDaemonHealth({ up: !!h?.daemon, ...(h?.stats ?? {}) });
     if (id) setIdentitiesDraft({ user: id.user ?? "", assistant: id.assistant ?? "" });
+    if (ob) setOnboardingStatus(ob);
   }, []);
 
   useEffect(() => {
@@ -307,6 +312,9 @@ export default function SettingsPage() {
             <button type="button" className="ghost" onClick={testConnection} disabled={busy}>
               Test connection
             </button>
+            <button type="button" className="primary" onClick={() => setOnboardingTrigger(Date.now())} disabled={busy}>
+              {onboardingStatus?.completed ? "Re-run onboarding" : "Run onboarding"}
+            </button>
             <button type="button" className="danger" onClick={() => setConfirmClear(true)} disabled={busy}>
               Clear all memory…
             </button>
@@ -317,6 +325,13 @@ export default function SettingsPage() {
               </span>
             )}
           </div>
+          {onboardingStatus?.completed && onboardingStatus.lastSummary && (
+            <p className={styles.sectionHint}>
+              Last onboarding: {onboardingStatus.lastSummary.projectsCreated} projects ·{" "}
+              {onboardingStatus.lastSummary.entitiesCreated} entities ·{" "}
+              {onboardingStatus.lastSummary.sessionsFound} sessions scanned.
+            </p>
+          )}
         </section>
 
         {/* ---------- Daemon ---------- */}
@@ -368,6 +383,12 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
+
+      <OnboardingModal
+        triggeredAt={onboardingTrigger}
+        onClose={() => setOnboardingTrigger(null)}
+        onComplete={() => load()}
+      />
 
       {confirmClear && (
         <div className={styles.confirm} onClick={() => setConfirmClear(false)}>

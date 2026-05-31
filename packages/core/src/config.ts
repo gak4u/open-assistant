@@ -31,10 +31,26 @@ const DaemonConfig = z.object({
 });
 export type DaemonConfig = z.infer<typeof DaemonConfig>;
 
+const OnboardingConfig = z.object({
+  completed: z.boolean().default(false),
+  lastRunAt: z.number().default(0),
+  lastSummary: z
+    .object({
+      sessionsFound: z.number().default(0),
+      reposFound: z.number().default(0),
+      projectsCreated: z.number().default(0),
+      entitiesCreated: z.number().default(0),
+      relationsCreated: z.number().default(0),
+    })
+    .default({}),
+});
+export type OnboardingConfigT = z.infer<typeof OnboardingConfig>;
+
 const Config = z.object({
   llm: LlmConfig.default({}),
   memory: MemoryConfig.default({}),
   daemon: DaemonConfig.default({}),
+  onboarding: OnboardingConfig.default({}),
 });
 export type Config = z.infer<typeof Config>;
 

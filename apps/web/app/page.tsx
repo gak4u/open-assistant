@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import styles from "./page.module.css";
+import { OnboardingModal } from "./OnboardingModal";
 
 type Msg = { role: "user" | "assistant"; content: string; meta?: string };
 type Health = "unknown" | "ok" | "bad";
@@ -15,19 +17,40 @@ export default function Home() {
   const [health, setHealth] = useState<Health>("unknown");
   const [stats, setStats] = useState<{ entities: number; relations: number; turns: number } | null>(null);
   const [identities, setIdentities] = useState<Identities>({ user: null, assistant: null });
+  const [activeProjects, setActiveProjects] = useState<number | null>(null);
+  const [onboardingTrigger, setOnboardingTrigger] = useState<number | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<string | undefined>(undefined);
+  const checkedOnboardingRef = useRef(false);
+
+  useEffect(() => {
+    // Auto-launch onboarding on first visit if it's never been run.
+    if (checkedOnboardingRef.current) return;
+    checkedOnboardingRef.current = true;
+    fetch("/api/onboarding/status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && data.completed === false) {
+          setOnboardingTrigger(Date.now());
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const check = async () => {
       try {
-        const [h, id] = await Promise.all([
+        const [h, id, p] = await Promise.all([
           fetch("/api/health").then((r) => (r.ok ? r.json() : null)).catch(() => null),
           fetch("/api/identities").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          fetch("/api/projects").then((r) => (r.ok ? r.json() : null)).catch(() => null),
         ]);
         setHealth(h?.daemon ? "ok" : "bad");
         if (h?.stats) setStats(h.stats);
         if (id) setIdentities({ user: id.user ?? null, assistant: id.assistant ?? null });
+        if (Array.isArray(p?.projects)) {
+          setActiveProjects(p.projects.filter((proj: { status: string }) => proj.status === "active").length);
+        }
       } catch {
         setHealth("bad");
       }
@@ -174,6 +197,11 @@ export default function Home() {
               {stats.entities} entities · {stats.relations} relations · {stats.turns} turns
             </span>
           )}
+          {activeProjects !== null && activeProjects > 0 && (
+            <Link href="/projects" className={styles.projectsPill}>
+              {activeProjects} active {activeProjects === 1 ? "project" : "projects"} →
+            </Link>
+          )}
         </div>
       </header>
 
@@ -224,6 +252,23 @@ export default function Home() {
           Send
         </button>
       </footer>
+
+      <OnboardingModal
+        triggeredAt={onboardingTrigger}
+        onClose={() => setOnboardingTrigger(null)}
+        onComplete={() => {
+          fetch("/api/projects")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((p) => {
+              if (Array.isArray(p?.projects)) {
+                setActiveProjects(
+                  p.projects.filter((proj: { status: string }) => proj.status === "active").length,
+                );
+              }
+            })
+            .catch(() => undefined);
+        }}
+      />
     </main>
   );
 }
