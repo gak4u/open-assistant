@@ -4,3 +4,4 @@ export * from "./config.js";
 export * from "./onboarding.js";
 export * from "./tmux.js";
 export * from "./registry.js";
+export * from "./superclaude.js";

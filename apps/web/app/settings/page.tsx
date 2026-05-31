@@ -54,13 +54,24 @@ export default function SettingsPage() {
   });
   const [onboardingTrigger, setOnboardingTrigger] = useState<number | null>(null);
   const [onboardingStatus, setOnboardingStatus] = useState<{ completed: boolean; lastRunAt: number; lastSummary: { projectsCreated: number; entitiesCreated: number; sessionsFound: number; reposFound: number; relationsCreated: number } } | null>(null);
+  const [superclaude, setSuperclaude] = useState<{
+    installed: boolean;
+    shell: "zsh" | "bash" | "fish" | "unknown";
+    rcFile: string | null;
+    source: "our-marker" | "user-defined" | "not-found";
+    version?: string;
+    hint?: string;
+    installing?: boolean;
+    lastNote?: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
-    const [s, h, id, ob] = await Promise.all([
+    const [s, h, id, ob, sc] = await Promise.all([
       fetch("/api/settings").then((r) => r.json()).catch(() => null),
       fetch("/api/health").then((r) => (r.ok ? r.json() : { daemon: false })).catch(() => ({ daemon: false })),
       fetch("/api/identities").then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetch("/api/onboarding/status").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/superclaude/status").then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ]);
     if (s) {
       setData(s);
@@ -69,7 +80,32 @@ export default function SettingsPage() {
     setDaemonHealth({ up: !!h?.daemon, ...(h?.stats ?? {}) });
     if (id) setIdentitiesDraft({ user: id.user ?? "", assistant: id.assistant ?? "" });
     if (ob) setOnboardingStatus(ob);
+    if (sc) setSuperclaude(sc);
   }, []);
+
+  const installSuperclaude = async () => {
+    setSuperclaude((s) => (s ? { ...s, installing: true, lastNote: undefined } : s));
+    try {
+      const r = await fetch("/api/superclaude/install", { method: "POST" });
+      const j = await r.json();
+      const note = j.wrote
+        ? `Installed${j.version ? ` (verified ${j.version})` : ""}. ${j.hint ?? ""}`.trim()
+        : j.installed
+          ? `Already installed (${j.source === "user-defined" ? "yours" : "ours"}).`
+          : `Install failed: ${j.error ?? "unknown error"}`;
+      setSuperclaude({ ...j, installing: false, lastNote: note });
+    } catch (err) {
+      setSuperclaude((s) =>
+        s
+          ? {
+              ...s,
+              installing: false,
+              lastNote: `Install failed: ${err instanceof Error ? err.message : String(err)}`,
+            }
+          : s,
+      );
+    }
+  };
 
   useEffect(() => {
     load();
@@ -361,6 +397,70 @@ export default function SettingsPage() {
                 onChange={(e) => update("daemon", { port: Number(e.target.value) || 7338 })}
               />
               <span className={styles.statusLine}>HTTP: /mcp + /health</span>
+            </div>
+          </div>
+          <div className={styles.row}>
+            <label className={styles.lbl}>superclaude</label>
+            <div className={styles.field}>
+              <div className={styles.inputRow}>
+                {superclaude ? (
+                  <span className={`${styles.badge} ${superclaude.installed ? styles.ok : styles.bad}`}>
+                    <span className={styles.dot} />
+                    {superclaude.installed
+                      ? `installed (${superclaude.shell})`
+                      : superclaude.shell === "unknown"
+                        ? "shell unknown"
+                        : "not installed"}
+                  </span>
+                ) : (
+                  <span className={styles.statusLine}>checking…</span>
+                )}
+                {superclaude && !superclaude.installed && superclaude.rcFile && (
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={installSuperclaude}
+                    disabled={!!superclaude.installing}
+                  >
+                    {superclaude.installing ? "Installing…" : "Install"}
+                  </button>
+                )}
+                {superclaude?.installed && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={installSuperclaude}
+                    disabled={!!superclaude.installing}
+                    title="Re-check"
+                  >
+                    Re-check
+                  </button>
+                )}
+              </div>
+              {superclaude && (
+                <span className={styles.hint}>
+                  {superclaude.rcFile ? (
+                    <>
+                      Wraps <code>claude --dangerously-skip-permissions</code> in your shell. Defined in{" "}
+                      <code>{superclaude.rcFile.replace(/^\/Users\/[^/]+/, "~")}</code>
+                      {superclaude.version && <> · version {superclaude.version}</>}.
+                    </>
+                  ) : (
+                    <>
+                      $SHELL is not set or unrecognised. Resume will fall back to{" "}
+                      <code>claude --dangerously-skip-permissions</code> directly.
+                    </>
+                  )}
+                </span>
+              )}
+              {superclaude?.lastNote && (
+                <span className={`${styles.statusLine} ${superclaude.installed ? styles.ok : styles.bad}`}>
+                  {superclaude.lastNote}
+                </span>
+              )}
+              {superclaude?.installed && superclaude.hint && !superclaude.lastNote && (
+                <span className={styles.hint}>{superclaude.hint}</span>
+              )}
             </div>
           </div>
           <div className={styles.field}>

@@ -2,8 +2,10 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { MemoryStore, entityId, type EntityType, type RelationType } from "@open-assistant/memory";
+import { detectStatus as detectSuperclaude, install as installSuperclaude } from "./superclaude.js";
 
 export type OnboardingPhase =
+  | "checking_superclaude"
   | "scanning_sessions"
   | "resolving_paths"
   | "scanning_repos"
@@ -102,6 +104,39 @@ export async function* runOnboarding(
   try {
     const claudeRoot = opts.claudeProjectsDir ?? path.join(homedir(), ".claude", "projects");
     const repoDirs = (opts.repoSearchDirs ?? DEFAULT_REPO_DIRS).filter((d) => existsSync(d));
+
+    // --- Phase 0: ensure `superclaude` is wired up in the user's shell ----
+    yield { type: "phase", phase: "checking_superclaude", message: "Checking superclaude…" };
+    const before = detectSuperclaude();
+    if (before.installed) {
+      const where = before.rcFile ? ` (defined in ${shortPath(before.rcFile)})` : "";
+      yield { type: "message", message: `superclaude already installed${where}` };
+    } else if (!before.rcFile) {
+      // Shell unknown — log the fallback we'll use and continue.
+      yield {
+        type: "message",
+        message: `superclaude not installed — shell unknown, will use \`claude --dangerously-skip-permissions\` directly`,
+      };
+    } else {
+      yield {
+        type: "message",
+        message: `superclaude not found — installing into ${shortPath(before.rcFile)}…`,
+      };
+      const result = installSuperclaude();
+      if (result.wrote) {
+        const v = result.version ? ` (verified ${result.version})` : "";
+        yield {
+          type: "message",
+          message: `superclaude installed${v}. ${result.hint ?? ""}`.trim(),
+        };
+      } else if (result.error) {
+        // Non-fatal — onboarding continues with claude fallback.
+        yield {
+          type: "message",
+          message: `superclaude install failed: ${result.error}. Using \`claude --dangerously-skip-permissions\` fallback.`,
+        };
+      }
+    }
 
     // --- Phase 1: enumerate session dirs ----------------------------------
     yield { type: "phase", phase: "scanning_sessions", message: `Scanning ${claudeRoot}…` };
