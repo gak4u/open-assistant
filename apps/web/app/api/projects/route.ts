@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { existsSync } from "node:fs";
+import { liveTmuxSnapshot, projectRuntime, type ProjectRuntimeStatus } from "@open-assistant/core";
 import { memory } from "@/lib/services";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+export type ProjectStatus = "running" | "paused" | "active" | "archived";
 
 export interface ProjectDTO {
   id: string;
@@ -18,23 +21,37 @@ export interface ProjectDTO {
   markers: string[];
   hasRepo: boolean;
   pathExists: boolean;
-  status: "active" | "archived";
+  status: ProjectStatus;
+  tmux: {
+    name: string | null;
+    runtime: ProjectRuntimeStatus;
+    attached: boolean;
+    lastResumedAt: number;
+    attachCommand: string | null;
+  };
 }
 
 export async function GET() {
   try {
     const entities = await memory().listEntities({ type: "project", limit: 500 });
+    const live = liveTmuxSnapshot();
     const projects: ProjectDTO[] = entities.map((e) => {
       const a = e.attributes ?? {};
       const localPath = typeof a["local_path"] === "string" ? a["local_path"] : null;
       const sessionId = typeof a["session_id"] === "string" ? a["session_id"] : null;
       const pathExists = localPath ? safeExists(localPath) : false;
       const lastActiveMs = typeof a["last_active_ms"] === "number" ? (a["last_active_ms"] as number) : 0;
-      // "active" per spec = the project's local path still exists on disk AND
-      // at least one Claude Code session has touched it. "archived" = either
-      // path went away or there's no session for it.
       const sessionCount = numAttr(a, "session_count");
-      const isActive = pathExists && sessionCount > 0;
+      const runtime = projectRuntime(e.id, live);
+      // Status priority: a live tmux session always wins, then "paused" if we
+      // know about a tmux name but it's gone, then "active" (knows a session
+      // and path exists), else "archived".
+      let status: ProjectStatus;
+      if (runtime.status === "running") status = "running";
+      else if (runtime.status === "paused") status = "paused";
+      else if (pathExists && sessionCount > 0) status = "active";
+      else status = "archived";
+
       return {
         id: e.id,
         name: e.name,
@@ -48,10 +65,24 @@ export async function GET() {
         markers: typeof a["markers"] === "string" ? a["markers"].split(",").filter(Boolean) : [],
         hasRepo: a["has_repo"] === true || a["has_repo"] === "true",
         pathExists,
-        status: isActive ? "active" : "archived",
+        status,
+        tmux: {
+          name: runtime.tmuxName,
+          runtime: runtime.status,
+          attached: runtime.tmuxAttached,
+          lastResumedAt: runtime.lastResumedAt,
+          attachCommand: runtime.tmuxName ? `tmux attach -t ${runtime.tmuxName}` : null,
+        },
       };
     });
-    projects.sort((a, b) => b.lastActiveMs - a.lastActiveMs || a.name.localeCompare(b.name));
+    // Running first, then by last activity.
+    const statusOrder: Record<ProjectStatus, number> = { running: 0, paused: 1, active: 2, archived: 3 };
+    projects.sort(
+      (a, b) =>
+        statusOrder[a.status] - statusOrder[b.status] ||
+        b.lastActiveMs - a.lastActiveMs ||
+        a.name.localeCompare(b.name),
+    );
     return NextResponse.json({ projects });
   } catch (err) {
     return NextResponse.json(

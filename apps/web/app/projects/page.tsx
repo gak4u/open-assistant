@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import styles from "./projects.module.css";
 
+type ProjectStatus = "running" | "paused" | "active" | "archived";
+
 type Project = {
   id: string;
   name: string;
@@ -17,10 +19,17 @@ type Project = {
   markers: string[];
   hasRepo: boolean;
   pathExists: boolean;
-  status: "active" | "archived";
+  status: ProjectStatus;
+  tmux: {
+    name: string | null;
+    runtime: "running" | "paused" | "archived";
+    attached: boolean;
+    lastResumedAt: number;
+    attachCommand: string | null;
+  };
 };
 
-type Filter = "all" | "active" | "archived";
+type Filter = "all" | "running" | "active" | "archived";
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -51,8 +60,20 @@ export default function ProjectsPage() {
   const resume = async (p: Project) => {
     const r = await fetch(`/api/projects/${encodeURIComponent(p.id)}/resume`, { method: "POST" });
     const j = await r.json();
-    if (j.ok) fireFlash("ok", `Opened ${p.name} in ${j.opened_in}`);
-    else fireFlash("bad", `Resume failed: ${j.error}`);
+    if (j.ok) {
+      const action = j.alreadyRunning ? "Attached to" : j.tmuxCreated ? "Started" : "Resumed";
+      fireFlash("ok", `${action} ${p.name} (tmux: ${j.tmuxName})`);
+      load();
+    } else fireFlash("bad", `Resume failed: ${j.error}`);
+  };
+  const killSession = async (p: Project) => {
+    if (!confirm(`Kill the tmux session for "${p.name}"? Any in-flight Claude Code work will stop.`)) return;
+    const r = await fetch(`/api/projects/${encodeURIComponent(p.id)}/kill`, { method: "POST" });
+    const j = await r.json();
+    if (j.ok) {
+      fireFlash("ok", `Killed ${j.tmuxName}`);
+      load();
+    } else fireFlash("bad", `Kill failed: ${j.error}`);
   };
   const openInFinder = async (p: Project) => {
     const r = await fetch(`/api/projects/${encodeURIComponent(p.id)}/open`, { method: "POST" });
@@ -73,6 +94,7 @@ export default function ProjectsPage() {
   const visible = projects.filter((p) => filter === "all" || p.status === filter);
   const counts = {
     all: projects.length,
+    running: projects.filter((p) => p.status === "running").length,
     active: projects.filter((p) => p.status === "active").length,
     archived: projects.filter((p) => p.status === "archived").length,
   };
@@ -89,11 +111,11 @@ export default function ProjectsPage() {
             </p>
           </div>
           <div className={styles.filters}>
-            {(["active", "all", "archived"] as Filter[]).map((f) => (
+            {(["running", "active", "all", "archived"] as Filter[]).map((f) => (
               <button
                 key={f}
                 type="button"
-                className={`${styles.tab} ${filter === f ? styles.active : ""}`}
+                className={`${styles.tab} ${filter === f ? styles.active : ""} ${f === "running" ? styles.running : ""}`}
                 onClick={() => setFilter(f)}
               >
                 {f} <span style={{ opacity: 0.6 }}>· {counts[f]}</span>
@@ -150,6 +172,24 @@ export default function ProjectsPage() {
 
                 {p.lastPrompt && <div className={styles.prompt}>{p.lastPrompt}</div>}
 
+                {p.tmux.name && (p.tmux.runtime === "running" || p.tmux.runtime === "paused") && (
+                  <div className={styles.tmuxRow}>
+                    <span className={`${styles.tmuxDot} ${styles[p.tmux.runtime]}`} />
+                    <code className={styles.tmuxName}>{p.tmux.name}</code>
+                    {p.tmux.attached && <span className={styles.tmuxAttached}>· attached</span>}
+                    {p.tmux.attachCommand && (
+                      <button
+                        type="button"
+                        className={styles.copyAttach}
+                        title="Copy attach command"
+                        onClick={() => navigator.clipboard.writeText(p.tmux.attachCommand ?? "")}
+                      >
+                        copy
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {p.markers.length > 0 && (
                   <div className={styles.markers}>
                     {p.markers.map((m) => (
@@ -161,12 +201,18 @@ export default function ProjectsPage() {
                 <div className={styles.actions}>
                   <button
                     type="button"
-                    className="ghost"
+                    className={p.status === "running" ? "primary" : "ghost"}
                     onClick={() => resume(p)}
                     disabled={!p.pathExists}
-                    title={p.pathExists ? "Open iTerm at this path and run `claude`" : "Path no longer exists"}
+                    title={
+                      p.status === "running"
+                        ? "Attach a new iTerm window to the existing tmux session"
+                        : p.pathExists
+                          ? "Start a tmux session running `superclaude --resume`, then attach iTerm to it"
+                          : "Path no longer exists"
+                    }
                   >
-                    Resume
+                    {p.status === "running" ? "Attach" : "Resume"}
                   </button>
                   <button
                     type="button"
@@ -176,6 +222,16 @@ export default function ProjectsPage() {
                   >
                     Finder
                   </button>
+                  {(p.status === "running" || p.status === "paused") && (
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => killSession(p)}
+                      title="Stop the tmux session and drop it from the registry"
+                    >
+                      Kill
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="danger"

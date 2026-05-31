@@ -59,7 +59,7 @@ export class AnthropicProvider implements LLMProvider {
     const resp = await this.client.messages.create({
       model: this.model,
       max_tokens: opts.maxTokens ?? this.maxTokens,
-      system,
+      ...buildSystemParam(system),
       messages: dialogue.map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
@@ -85,7 +85,7 @@ export class AnthropicProvider implements LLMProvider {
     const stream = this.client.messages.stream({
       model: this.model,
       max_tokens: opts.maxTokens ?? this.maxTokens,
-      system,
+      ...buildSystemParam(system),
       messages: dialogue.map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
@@ -109,6 +109,29 @@ export class AnthropicProvider implements LLMProvider {
       outputTokens: final.usage?.output_tokens,
     };
   }
+}
+
+/**
+ * Wrap the merged system prompt in Anthropic's content-block shape with a
+ * cache_control breakpoint, so the prefix (default system + MEMORY block)
+ * is reused across turns at ~10% of the cost. Skips caching when the system
+ * is too short to be worth caching — Anthropic enforces a minimum cacheable
+ * size (1024 tokens on Sonnet, 2048 on Opus) and silently no-ops below it,
+ * but sending a tiny block as cacheable still costs the wrapper bytes.
+ */
+function buildSystemParam(system: string | undefined):
+  | { system: Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> }
+  | Record<string, never> {
+  if (!system) return {};
+  // Rough token estimate: ~4 chars/token. Skip caching below ~800 tokens since
+  // it won't meet Anthropic's minimum anyway.
+  const approxTokens = system.length / 4;
+  const block: { type: "text"; text: string; cache_control?: { type: "ephemeral" } } = {
+    type: "text",
+    text: system,
+  };
+  if (approxTokens >= 800) block.cache_control = { type: "ephemeral" };
+  return { system: [block] };
 }
 
 export interface OllamaProviderOptions {

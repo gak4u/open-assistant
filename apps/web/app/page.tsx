@@ -49,7 +49,13 @@ export default function Home() {
         if (h?.stats) setStats(h.stats);
         if (id) setIdentities({ user: id.user ?? null, assistant: id.assistant ?? null });
         if (Array.isArray(p?.projects)) {
-          setActiveProjects(p.projects.filter((proj: { status: string }) => proj.status === "active").length);
+          // Count anything that has live state: running tmux sessions plus
+          // resumable (active) projects. Archived/paused don't count.
+          setActiveProjects(
+            p.projects.filter((proj: { status: string }) =>
+              proj.status === "running" || proj.status === "active",
+            ).length,
+          );
         }
       } catch {
         setHealth("bad");
@@ -262,7 +268,9 @@ export default function Home() {
             .then((p) => {
               if (Array.isArray(p?.projects)) {
                 setActiveProjects(
-                  p.projects.filter((proj: { status: string }) => proj.status === "active").length,
+                  p.projects.filter(
+                    (proj: { status: string }) => proj.status === "running" || proj.status === "active",
+                  ).length,
                 );
               }
             })

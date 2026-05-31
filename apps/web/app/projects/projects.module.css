@@ -132,10 +132,61 @@
   flex-shrink: 0;
 }
 .statusBadge .dot { width: 6px; height: 6px; border-radius: 50%; }
+.statusBadge.running {
+  background: rgba(124, 156, 255, 0.12);
+  color: var(--accent);
+}
+.statusBadge.running .dot {
+  background: var(--accent);
+  animation: livePulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 8px rgba(124, 156, 255, 0.7);
+}
+.statusBadge.paused {
+  background: rgba(255, 200, 120, 0.1);
+  color: #ffc878;
+}
+.statusBadge.paused .dot { background: #ffc878; }
 .statusBadge.active { background: rgba(95, 220, 126, 0.1); color: var(--ok); }
 .statusBadge.active .dot { background: var(--ok); }
 .statusBadge.archived { background: var(--bg-input); color: var(--fg-faint); }
 .statusBadge.archived .dot { background: var(--fg-faint); }
+
+@keyframes livePulse {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 1; transform: scale(1.2); }
+}
+
+.tab.running.active {
+  background: rgba(124, 156, 255, 0.18);
+}
+
+/* tmux info row inside a card */
+.tmuxRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.tmuxDot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; }
+.tmuxDot.running { background: var(--accent); box-shadow: 0 0 6px rgba(124, 156, 255, 0.6); }
+.tmuxDot.paused  { background: #ffc878; }
+.tmuxName { font-family: var(--mono); font-size: 11px; color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.tmuxAttached { color: var(--accent); font-size: 10px; }
+.copyAttach {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  color: var(--fg-faint);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.copyAttach:hover { color: var(--fg); border-color: var(--border); }
 
 .empty {
   display: flex;
