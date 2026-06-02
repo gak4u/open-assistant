@@ -1,8 +1,6 @@
 # open-assistant
 
-A **self-hostable, privacy-first AI assistant daemon** with persistent graph memory, a remote
-agent runner, and a built-in MCP server. Talk to it from the CLI, the web UI, or any MCP client
-(Claude Desktop, Claude Code, Cursor, …) — and it remembers what you tell it across sessions.
+The missing memory layer for Claude Code developers — persistent graph memory, session continuity, and project awareness, built for developers who live in the terminal.
 
 - **Persistent memory** via FalkorDB (Redis-compatible graph DB). Every turn is stored as a node;
   entities and relations are extracted and linked into a queryable graph.
@@ -14,6 +12,22 @@ agent runner, and a built-in MCP server. Talk to it from the CLI, the web UI, or
   installed, otherwise direct API). Results flow back into the graph.
 - **Daemon.** Always-on process with a `/health` endpoint, ready for `launchd` (Mac) or
   `systemd` (Linux).
+
+---
+
+## How it compares
+
+|                       | open-assistant                              | OpenClaw                  | Hermes Agent             |
+| --------------------- | ------------------------------------------- | ------------------------- | ------------------------ |
+| **Primary focus**     | Claude Code session management              | Gateway / messaging       | Self-improving loop      |
+| **Memory**            | FalkorDB graph (entities + relations)       | Session-level, flat       | SQLite FTS5              |
+| **Audience**          | Dev teams using Claude Code                 | Non-developers            | Developers / researchers |
+| **Channels**          | Web UI + MCP + CLI                          | 25+ messaging platforms   | 6 platforms              |
+| **Project awareness** | First-class (onboarding + project graph)    | None                      | Limited                  |
+| **Model support**     | Pluggable (Claude / Ollama / OpenAI-compat) | Provider-agnostic         | 200+ via OpenRouter      |
+| **Unique angle**      | Session continuity + tmux                   | Breadth                   | Self-improving skills    |
+
+If you use Claude Code daily and are tired of losing session context, re-explaining your projects, and restarting from scratch — open-assistant is built for you.
 
 ---
 
