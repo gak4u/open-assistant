@@ -66,25 +66,38 @@ export class MemoryStore {
   async init(): Promise<void> {
     if (this.initialized) return;
     await this.connect();
-    const stmts = [
+    // Range indexes via Cypher CREATE — works across FalkorDB versions.
+    const rangeStmts = [
       "CREATE INDEX FOR (e:Entity) ON (e.id)",
       "CREATE INDEX FOR (e:Entity) ON (e.type)",
       "CREATE INDEX FOR (e:Entity) ON (e.name)",
-      "CREATE FULLTEXT INDEX FOR (e:Entity) ON (e.name, e.description)",
       "CREATE INDEX FOR (t:Turn) ON (t.id)",
       "CREATE INDEX FOR (t:Turn) ON (t.session_id)",
     ];
-    for (const s of stmts) {
+    for (const s of rangeStmts) {
       try {
         await this.query(s);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        // Index already exists, ignore.
         if (!/already.*indexed|already exists/i.test(msg)) {
-          // Surface other errors but don't crash startup.
           // eslint-disable-next-line no-console
           console.warn(`[memory] init warning: ${msg}`);
         }
+      }
+    }
+    // Full-text index via FalkorDB's native procedure call — the Cypher
+    // `CREATE FULLTEXT INDEX ... ON (...)` form is silently dropped on
+    // older FalkorDB builds, leaving searchEntities returning nothing.
+    // The procedure call form works back to 1.x.
+    try {
+      await this.query(
+        "CALL db.idx.fulltext.createNodeIndex('Entity', 'name', 'description')",
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/already.*indexed|already exists|attempt to create.*existing/i.test(msg)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[memory] init warning (fulltext index): ${msg}`);
       }
     }
     this.initialized = true;
@@ -144,24 +157,38 @@ export class MemoryStore {
       id,
       type: entity.type,
       name: entity.name,
-      description: entity.description ?? "",
       now,
     };
-    const setClauses = ["e.type = $type", "e.name = $name", "e.description = $description", "e.updated_at = $now"];
+    // ALWAYS-write fields: type and name come from required args; updated_at
+    // is the freshness signal. Description is only touched when the caller
+    // explicitly provided one — otherwise re-upserts (e.g. from a `remember`
+    // call that just adds a relation) would silently wipe the existing text.
+    const onCreate = ["e.type = $type", "e.name = $name", "e.updated_at = $now"];
+    const onMatch = ["e.type = $type", "e.name = $name", "e.updated_at = $now"];
+    if (entity.description !== undefined) {
+      params["description"] = entity.description;
+      onCreate.push("e.description = $description");
+      onMatch.push("e.description = $description");
+    } else {
+      // On create only, seed an empty string so reads don't return undefined.
+      onCreate.push("e.description = ''");
+    }
     if (entity.attributes) {
       let i = 0;
       for (const [k, v] of Object.entries(entity.attributes)) {
         const safeKey = k.replace(/[^a-zA-Z0-9_]/g, "_");
         const paramName = `attr${i++}`;
-        setClauses.push(`e.attr_${safeKey} = $${paramName}`);
+        const clause = `e.attr_${safeKey} = $${paramName}`;
+        onCreate.push(clause);
+        onMatch.push(clause);
         params[paramName] = v;
       }
     }
     await this.query(
       `
       MERGE (e:Entity {id: $id})
-      ON CREATE SET ${setClauses.join(", ")}, e.created_at = $now
-      ON MATCH  SET ${setClauses.join(", ")}
+      ON CREATE SET ${onCreate.join(", ")}, e.created_at = $now
+      ON MATCH  SET ${onMatch.join(", ")}
       RETURN e
       `,
       params,
@@ -201,36 +228,52 @@ export class MemoryStore {
 
   async searchEntities(query: string, limit = 10): Promise<MemorySearchHit[]> {
     await this.init();
-    const q = query.replace(/"/g, '\\"');
-    try {
-      const rows = await this.queryRows(
-        `CALL db.idx.fulltext.queryNodes('Entity', $q) YIELD node, score
-         RETURN node, score ORDER BY score DESC LIMIT ${Math.min(limit, 50)}`,
-        { q: `${q}*` },
-        true,
-      );
-      return rows
-        .map((r) => {
-          const entity = nodeToEntity(r["node"]);
-          if (!entity) return null;
-          return { entity, score: Number(r["score"] ?? 0) };
-        })
-        .filter((x): x is MemorySearchHit => !!x);
-    } catch {
-      // Fallback to substring match if the FT index isn't populated yet.
-      const rows = await this.queryRows(
-        `MATCH (e:Entity)
-         WHERE toLower(e.name) CONTAINS toLower($q)
-            OR toLower(e.description) CONTAINS toLower($q)
-         RETURN e LIMIT ${Math.min(limit, 50)}`,
-        { q: query },
-        true,
-      );
-      return rows
-        .map((r) => nodeToEntity(r["e"]))
-        .filter((e): e is Entity => !!e)
-        .map((entity) => ({ entity, score: 1 }));
+    const cap = Math.min(limit, 50);
+
+    // First try the fulltext index. The FT query parser treats `-`, `,`, `.`,
+    // `:`, and quotes as special syntax, so passing a raw user prompt like
+    // "open-assistant" returns zero rows even though entities match. Strip
+    // those down to word tokens before sending.
+    const ftQuery = ftSanitize(query);
+    if (ftQuery) {
+      try {
+        const rows = await this.queryRows(
+          `CALL db.idx.fulltext.queryNodes('Entity', $q) YIELD node, score
+           RETURN node, score ORDER BY score DESC LIMIT ${cap}`,
+          { q: ftQuery },
+          true,
+        );
+        const hits = rows
+          .map((r) => {
+            const entity = nodeToEntity(r["node"]);
+            if (!entity) return null;
+            return { entity, score: Number(r["score"] ?? 0) };
+          })
+          .filter((x): x is MemorySearchHit => !!x);
+        if (hits.length) return hits;
+        // Fall through to substring on empty — FT may legitimately have no
+        // match even though substring would (older index, never re-indexed
+        // after upgrade, special char that survived sanitize, etc.).
+      } catch {
+        // Fall through.
+      }
     }
+
+    // Substring fallback. Single CONTAINS over (name + description) catches
+    // anything the FT path missed and is the only thing that works at all
+    // when the FT index isn't there (old FalkorDB) or wasn't populated yet.
+    const rows = await this.queryRows(
+      `MATCH (e:Entity)
+       WHERE toLower(e.name) CONTAINS toLower($q)
+          OR toLower(e.description) CONTAINS toLower($q)
+       RETURN e LIMIT ${cap}`,
+      { q: query },
+      true,
+    );
+    return rows
+      .map((r) => nodeToEntity(r["e"]))
+      .filter((e): e is Entity => !!e)
+      .map((entity) => ({ entity, score: 0.5 }));
   }
 
   // -------- Relations --------
@@ -411,6 +454,21 @@ export class MemoryStore {
 }
 
 // ---------- helpers ----------
+
+/**
+ * Strip FT-parser-meaningful characters from a user query. Redis Search
+ * (which backs FalkorDB's fulltext) treats hyphens as NOT, dots and colons
+ * as field/special syntax, and quotes as phrase delimiters. So a raw
+ * prompt like `"open-assistant"` parses to "open NOT assistant" and
+ * returns nothing. We reduce to plain words separated by spaces; the FT
+ * engine then ANDs them, which is what users actually want.
+ */
+function ftSanitize(s: string): string {
+  return s
+    .replace(/[-,.:;/\\(){}\[\]"'`<>!@#$%^&*+=~|?]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function formatParams(params: Record<string, unknown>): string {
   const parts: string[] = [];
