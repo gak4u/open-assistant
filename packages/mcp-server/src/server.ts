@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Assistant } from "@open-assistant/core";
+import { Assistant, currentConfig, onboardingCoordinator, type OnboardingEvent } from "@open-assistant/core";
 import { AgentQueue } from "@open-assistant/agent";
 import { EntityTypes, MemoryStore, entityId } from "@open-assistant/memory";
 
@@ -26,11 +26,13 @@ export function buildServer(opts: BuildServerOptions = {}): OpenAssistantServer 
   const server = new McpServer(
     { name: "open-assistant", version: "0.1.0" },
     {
-      capabilities: { tools: {}, resources: {} },
+      capabilities: { tools: {}, resources: {}, logging: {} },
       instructions:
         "Persistent, graph-backed personal assistant. Use `ask` for memory-augmented Q&A, " +
         "`remember`/`forget` to manage entities directly, `search_memory` to query the graph, " +
-        "and `run_agent` to dispatch a long-running sub-agent task.",
+        "`run_agent` to dispatch a long-running sub-agent task, and `run_onboarding` to " +
+        "scan your Claude Code sessions + code directories and seed the memory graph. " +
+        "Read `onboarding://status` for the current onboarding state.",
     },
   );
 
@@ -198,5 +200,211 @@ export function buildServer(opts: BuildServerOptions = {}): OpenAssistantServer 
     },
   );
 
+  // ---------------------------- Onboarding ---------------------------------
+
+  const coordinator = onboardingCoordinator();
+
+  server.tool(
+    "run_onboarding",
+    "Scan Claude Code sessions, discover code repos, and seed the memory graph with one project entity per repo. Streams progress lines and returns a final summary. Pass lightweight=true to skip the filesystem repo scan (sessions only).",
+    {
+      lightweight: z
+        .boolean()
+        .default(false)
+        .describe("Skip the filesystem repo discovery — only seed projects from Claude Code sessions"),
+    },
+    async ({ lightweight }) => {
+      const isFresh = coordinator.isIdle();
+      // Collect events emitted during THIS call (not historical ones).
+      const captured: OnboardingEvent[] = [];
+      const off = coordinator.on("event", (e) => captured.push(e));
+      try {
+        const summary = await coordinator.start(memory, { lightweight });
+        const text = renderOnboardingText({
+          lightweight,
+          attachedToExistingRun: !isFresh,
+          events: captured,
+          summary,
+        });
+        return { content: [{ type: "text", text }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Onboarding failed: ${msg}` }],
+        };
+      } finally {
+        off();
+      }
+    },
+  );
+
+  server.tool(
+    "onboarding_status",
+    "Get the current onboarding state (never_run / in_progress / completed) and last summary.",
+    {},
+    async () => {
+      const text = formatOnboardingStatusText();
+      return { content: [{ type: "text", text }] };
+    },
+  );
+
+  server.resource(
+    "onboarding-status",
+    "onboarding://status",
+    {
+      description: "Current onboarding state — never_run / in_progress / completed — plus the last run's summary.",
+      mimeType: "application/json",
+    },
+    async (uri) => {
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: JSON.stringify(buildStatusPayload(), null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  // Auto-trigger lightweight onboarding the first time a server is built when
+  // the user has never run it. Guarded by the config flag so multiple MCP
+  // processes (Claude Code + Claude Desktop both connecting) don't all retry.
+  maybeAutoOnboard(memory, server);
+
   return { server, assistant, memory, queue };
+}
+
+// ============================ helpers ====================================
+
+function buildStatusPayload() {
+  const cfg = currentConfig();
+  const snap = onboardingCoordinator().current_snapshot();
+  const stateFromCoordinator: "never_run" | "in_progress" | "completed" | "error" =
+    snap.state === "running"
+      ? "in_progress"
+      : snap.state === "done"
+        ? "completed"
+        : snap.state === "error"
+          ? "error"
+          : cfg.onboarding.completed
+            ? "completed"
+            : "never_run";
+  return {
+    state: stateFromCoordinator,
+    completed: cfg.onboarding.completed,
+    lastRunAt: cfg.onboarding.lastRunAt,
+    lastSummary: cfg.onboarding.lastSummary,
+    currentRun:
+      snap.state === "running"
+        ? {
+            startedAt: snap.startedAt,
+            lightweight: snap.lightweight,
+            recentEvents: snap.events.slice(-5),
+          }
+        : null,
+    error: snap.error ?? null,
+  };
+}
+
+function formatOnboardingStatusText(): string {
+  const p = buildStatusPayload();
+  const lines: string[] = [`state: ${p.state}`];
+  if (p.lastRunAt) {
+    lines.push(`last run: ${new Date(p.lastRunAt).toISOString()}`);
+    const s = p.lastSummary;
+    if (s) {
+      lines.push(
+        `last summary: ${s.projectsCreated} projects, ${s.sessionsFound} sessions, ${s.reposFound} repos, ` +
+          `${s.entitiesCreated} entities, ${s.relationsCreated} relations`,
+      );
+    }
+  } else {
+    lines.push("(no completed run yet)");
+  }
+  if (p.currentRun) {
+    lines.push(
+      `currently running (${p.currentRun.lightweight ? "lightweight" : "full"}) since ` +
+        new Date(p.currentRun.startedAt).toISOString(),
+    );
+  }
+  if (p.error) lines.push(`last error: ${p.error}`);
+  return lines.join("\n");
+}
+
+function renderOnboardingText(args: {
+  lightweight: boolean;
+  attachedToExistingRun: boolean;
+  events: OnboardingEvent[];
+  summary: { sessionsFound: number; reposFound: number; projectsCreated: number; entitiesCreated: number; relationsCreated: number; durationMs?: number };
+}): string {
+  const lines: string[] = [];
+  lines.push(args.lightweight ? "▷ Lightweight onboarding (sessions only)" : "▷ Onboarding");
+  if (args.attachedToExistingRun) lines.push("(attached to an in-flight run; results below reflect the shared state)");
+  lines.push("");
+  for (const e of args.events) {
+    if (e.type === "phase") lines.push(`▸ ${e.phase ?? ""}${e.message ? ` — ${e.message}` : ""}`);
+    else if (e.type === "message" && e.message) lines.push(`  ${e.message}`);
+    else if (e.type === "error" && e.error) lines.push(`  ✗ ${e.error}`);
+  }
+  lines.push("");
+  lines.push("── summary ──");
+  const s = args.summary;
+  lines.push(`  projects:   ${s.projectsCreated}`);
+  lines.push(`  sessions:   ${s.sessionsFound}`);
+  lines.push(`  repos:      ${s.reposFound}`);
+  lines.push(`  entities:   ${s.entitiesCreated}`);
+  lines.push(`  relations:  ${s.relationsCreated}`);
+  if (typeof s.durationMs === "number") lines.push(`  took:       ${(s.durationMs / 1000).toFixed(1)}s`);
+  return lines.join("\n");
+}
+
+// Module-level guard so a single process never auto-runs twice even when
+// multiple buildServer() calls happen (HTTP daemon makes one per session).
+let autoAttempted = false;
+
+function maybeAutoOnboard(memory: MemoryStore, server: McpServer): void {
+  if (autoAttempted) return;
+  autoAttempted = true;
+  let cfg;
+  try {
+    cfg = currentConfig();
+  } catch {
+    return;
+  }
+  if (cfg.onboarding.completed) return;
+  const coord = onboardingCoordinator();
+  if (!coord.isIdle()) return;
+
+  // Fire-and-forget. The coordinator persists the completion flag, so
+  // subsequent buildServer() calls (in this process or in other MCP clients)
+  // skip the auto-run.
+  coord
+    .start(memory, { lightweight: true })
+    .then((summary) => {
+      const message =
+        `open-assistant: first-connect onboarding (lightweight) complete — ` +
+        `${summary.projectsCreated ?? 0} projects · ${summary.sessionsFound ?? 0} sessions · ` +
+        `${summary.entitiesCreated ?? 0} entities. Call \`run_onboarding\` for the full sweep ` +
+        `(includes filesystem repo discovery).`;
+      // Notify clients that subscribed to logging. Wrapped in try because not
+      // every client supports it.
+      try {
+        server.server.sendLoggingMessage({ level: "info", data: message });
+      } catch {
+        /* not subscribed — that's fine */
+      }
+    })
+    .catch((err) => {
+      try {
+        server.server.sendLoggingMessage({
+          level: "error",
+          data: `open-assistant: auto-onboarding failed — ${err instanceof Error ? err.message : String(err)}`,
+        });
+      } catch {
+        /* swallow */
+      }
+    });
 }

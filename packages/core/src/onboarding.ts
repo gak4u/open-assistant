@@ -58,6 +58,13 @@ export interface OnboardingOptions {
   repoSearchDirs?: string[];
   /** Max depth when walking repoSearchDirs. */
   repoMaxDepth?: number;
+  /**
+   * Lightweight mode: skip the filesystem repo scan and only seed projects
+   * from Claude Code sessions. Used by the auto-on-first-connect path from
+   * the MCP server, where we want a fast first impression and let the user
+   * run the full sweep on demand.
+   */
+  lightweight?: boolean;
 }
 
 const DEFAULT_REPO_DIRS = [
@@ -175,23 +182,30 @@ export async function* runOnboarding(
     });
     yield { type: "message", message: `${validSessions.length} sessions point to live paths` };
 
-    // --- Phase 3: scan filesystem for repos -------------------------------
-    yield { type: "phase", phase: "scanning_repos", message: `Scanning ${repoDirs.length} repo roots…` };
+    // --- Phase 3: scan filesystem for repos (skipped in lightweight mode) --
     const repos: RepoRecord[] = [];
-    const maxDepth = opts.repoMaxDepth ?? 3;
-    for (let i = 0; i < repoDirs.length; i++) {
-      const root = repoDirs[i]!;
+    if (opts.lightweight) {
       yield {
-        type: "progress",
-        phase: "scanning_repos",
-        current: i + 1,
-        total: repoDirs.length,
-        message: `Scanning ${shortPath(root)}…`,
+        type: "message",
+        message: "Skipping repo discovery (lightweight mode — run full onboarding from the web UI to scan ~/Projects, ~/Personal, etc.)",
       };
-      walkForRepos(root, maxDepth, repos);
+    } else {
+      yield { type: "phase", phase: "scanning_repos", message: `Scanning ${repoDirs.length} repo roots…` };
+      const maxDepth = opts.repoMaxDepth ?? 3;
+      for (let i = 0; i < repoDirs.length; i++) {
+        const root = repoDirs[i]!;
+        yield {
+          type: "progress",
+          phase: "scanning_repos",
+          current: i + 1,
+          total: repoDirs.length,
+          message: `Scanning ${shortPath(root)}…`,
+        };
+        walkForRepos(root, maxDepth, repos);
+      }
+      summary.reposFound = repos.length;
+      yield { type: "message", message: `Found ${repos.length} repos` };
     }
-    summary.reposFound = repos.length;
-    yield { type: "message", message: `Found ${repos.length} repos` };
 
     // --- Phase 4: match sessions ↔ repos, build project list --------------
     yield { type: "phase", phase: "matching", message: "Matching sessions to repos…" };

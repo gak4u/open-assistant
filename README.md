@@ -168,12 +168,46 @@ Tools advertised:
 
 | Tool            | Input                                       | What it does                                   |
 | --------------- | ------------------------------------------- | ---------------------------------------------- |
-| `ask`           | `question`, optional `session_id`           | Memory-augmented Q&A; persists the turn        |
-| `remember`      | `name`, `type`, optional `description`, `related_to` | Upsert an entity (and optional edge)  |
-| `forget`        | `id` or `name`+`type`                       | Delete an entity and its relations             |
-| `search_memory` | `query`, `limit`, `include_neighbours`      | Full-text search the entity graph              |
-| `run_agent`     | `task`, optional `wait`                     | Queue (or inline-run) a remote sub-agent       |
-| `agent_status`  | `id`                                        | Look up a queued / completed agent task        |
+| `ask`               | `question`, optional `session_id`                       | Memory-augmented Q&A; persists the turn                    |
+| `remember`          | `name`, `type`, optional `description`, `related_to`    | Upsert an entity (and optional edge)                       |
+| `forget`            | `id` or `name`+`type`                                   | Delete an entity and its relations                         |
+| `search_memory`     | `query`, `limit`, `include_neighbours`                  | Full-text search the entity graph                          |
+| `run_agent`         | `task`, optional `wait`                                 | Queue (or inline-run) a remote sub-agent                   |
+| `agent_status`      | `id`                                                    | Look up a queued / completed agent task                    |
+| `run_onboarding`    | optional `lightweight`                                  | Scan Claude Code sessions + repos and seed the memory graph |
+| `onboarding_status` | (none)                                                  | Current state + last summary                               |
+
+Resources:
+
+| URI                    | Type               | What it is                                                 |
+| ---------------------- | ------------------ | ---------------------------------------------------------- |
+| `onboarding://status`  | `application/json` | Live onboarding state — `never_run` / `in_progress` / `completed` plus the last summary. Clients like Claude Desktop can surface this without a tool call. |
+
+### Triggering onboarding from an MCP client
+
+From Claude Desktop, Claude Code, or any other MCP client connected to
+open-assistant, just call the tool:
+
+> Run the `run_onboarding` tool to scan your Claude Code sessions and build
+> your memory graph.
+
+The tool streams its progress as text and returns a final summary
+(projects / sessions / repos / entities / relations). Pass `lightweight: true`
+to skip the filesystem repo discovery if you only want session-derived
+projects — fast first impression with no `~/Projects` walk.
+
+**First-connect auto-run.** The very first time *any* MCP client connects
+and `~/.open-assistant/config.json` has `onboarding.completed: false`, the
+server kicks off a lightweight onboarding in the background and emits a
+logging-message notification when it finishes. The full sweep (repo
+discovery in `~/Projects`, `~/Personal`, `~/Work`, …) stays manual — call
+`run_onboarding` (no args) or use the **Settings → Memory → Run onboarding**
+button in the web UI.
+
+To check whether onboarding has ever run, either:
+
+- call the `onboarding_status` tool, or
+- read the `onboarding://status` resource (same payload, JSON).
 
 ---
 
